@@ -125,6 +125,22 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_concrete_finite(name: str, array: Array) -> Array:
+    """Reject non-finite values at an eager public boundary.
+
+    ``start`` is the only public path that commits an observation into
+    persistent state without a runtime gate, so a non-finite value accepted
+    there would poison ``last_observation`` and permanently reject every
+    later update through the state-finiteness gate
+    (``_commit_scan_safe_actor_state``). Traced inputs pass through: under
+    ``jax.jit`` or ``scan`` tracing the runtime update-side finiteness gates
+    remain authoritative.
+    """
+    if not isinstance(array, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(array))):
+        raise ValueError(f"{name} must contain only finite values")
+    return array
+
+
 def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
     if type(sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
@@ -693,13 +709,28 @@ class QHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: QHordeActorCriticState,
         observation: Array,
     ) -> tuple[QHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: a non-finite value would otherwise be stored in
+        ``last_observation`` and reject every later update with the state
+        bitwise frozen. Traced inputs pass through to the runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: QHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[QHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -1002,13 +1033,28 @@ class HordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: HordeActorCriticState,
         observation: Array,
     ) -> tuple[HordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: a non-finite value would otherwise be stored in
+        ``last_observation`` and reject every later update with the state
+        bitwise frozen. Traced inputs pass through to the runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: HordeActorCriticState,
+        observation: Array,
+    ) -> tuple[HordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -1831,13 +1877,28 @@ class NonlinearHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: NonlinearHordeActorCriticState,
         observation: Array,
     ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: a non-finite value would otherwise be stored in
+        ``last_observation`` and reject every later update with the state
+        bitwise frozen. Traced inputs pass through to the runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: NonlinearHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         new_state = state.replace(  # type: ignore[attr-defined]
             last_observation=observation,
@@ -2537,13 +2598,28 @@ class NonlinearQHordeActorCriticAgent:
         ).astype(jnp.int32)
         return action, key, probs
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(
         self,
         state: NonlinearHordeActorCriticState,
         observation: Array,
     ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
-        """Select and store the first action for a stream or episode."""
+        """Select and store the first action for a stream or episode.
+
+        The observation is validated eagerly at this state-committing
+        boundary: a non-finite value would otherwise be stored in
+        ``last_observation`` and reject every later update with the state
+        bitwise frozen. Traced inputs pass through to the runtime gates.
+        """
+        observation = _require_concrete_finite("observation", observation)
+        return self._start(state, observation)  # type: ignore[no-any-return]
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(
+        self,
+        state: NonlinearHordeActorCriticState,
+        observation: Array,
+    ) -> tuple[NonlinearHordeActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
+        """Jitted implementation of one checked episode start."""
         action, key, probs = self.select_action(state, observation)
         return (
             state.replace(  # type: ignore[attr-defined]
