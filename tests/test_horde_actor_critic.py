@@ -2216,3 +2216,106 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     )
     np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
     chex.assert_trees_all_equal(result.state, state)
+
+
+def _start_agents() -> list[tuple[Any, int]]:
+    """Return every Horde actor-critic agent with its observation width."""
+    return [
+        (_make_agent(), 2),
+        (_make_qhorde_agent(), 2),
+        (_make_nlhac_agent(), OBS_DIM),
+        (_make_nlqhac_agent(), OBS_DIM),
+    ]
+
+
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("agent_index", range(4))
+def test_horde_actor_critic_start_rejects_nonfinite_observation(
+    agent_index: int,
+    bad_value: float,
+) -> None:
+    """Every Horde actor-critic start boundary refuses non-finite observations.
+
+    ``start`` is the one public path that commits the observation into
+    persistent state without a runtime gate: a non-finite value accepted here
+    poisons ``last_observation`` and permanently wedges every later update
+    (each is rejected by the state-finiteness gate with the state bitwise
+    unchanged). The boundary therefore fails closed eagerly, matching the
+    actor-critic start contract.
+    """
+    agent, feature_dim = _start_agents()[agent_index]
+    state = agent.init(feature_dim, jr.key(0))
+    bad_observation = jnp.array(
+        [1.0] * (feature_dim - 1) + [bad_value],
+        dtype=jnp.float32,
+    )
+    with pytest.raises(ValueError, match="finite"):
+        agent.start(state, bad_observation)
+
+
+def test_horde_actor_critic_start_accepts_finite_observations() -> None:
+    """The eager start gate leaves every finite observation untouched."""
+    for agent, feature_dim in _start_agents():
+        state = agent.init(feature_dim, jr.key(0))
+        observation = jnp.arange(feature_dim, dtype=jnp.float32) + 1.0
+        started, action, probs = agent.start(state, observation)
+        chex.assert_trees_all_close(started.last_observation, observation)
+        assert int(started.last_action) == int(action)
+        assert bool(jnp.all(jnp.isfinite(probs)))
+
+
+def test_horde_actor_critic_nonfinite_start_would_wedge_later_updates() -> None:
+    """Document the livelock the eager start gate prevents.
+
+    Under tracing the eager gate passes through and the runtime update gate
+    stays authoritative, so this test commits a non-finite ``last_observation``
+    the way the pre-fix public ``start`` did. Every later valid update must
+    then be rejected with the state bitwise frozen: the agent livelocks with
+    no error and no recovery path. The eager gate keeps that poison out of
+    persistent state in the first place.
+    """
+    agent = _make_agent()
+    state = agent.init(2, jr.key(0))
+    bad_observation = jnp.array([1.0, np.nan], dtype=jnp.float32)
+
+    # A traced start reproduces the pre-fix behavior: the non-finite
+    # observation is committed into ``last_observation``.
+    traced_start = jax.jit(agent.start)
+    poisoned, _, _ = traced_start(state, bad_observation)
+    assert not bool(jnp.all(jnp.isfinite(poisoned.last_observation)))
+
+    applied = []
+    current = poisoned
+    for _ in range(5):
+        result = agent.update(
+            current,
+            reward=jnp.array(1.0, dtype=jnp.float32),
+            observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        )
+        applied.append(bool(result.update_applied))
+        current = result.state
+
+    # Every valid update is rejected and the state stays bitwise frozen.
+    assert applied == [False, False, False, False, False]
+    chex.assert_trees_all_equal(
+        current.replace(rng_key=jr.key_data(current.rng_key)),
+        poisoned.replace(rng_key=jr.key_data(poisoned.rng_key)),
+    )
+
+
+def test_horde_actor_critic_start_gate_preserves_traced_callers() -> None:
+    """A traced start still returns a state instead of raising.
+
+    The eager gate is a public-boundary check: ``jax.jit``, ``scan``, and
+    ``vmap`` callers must keep working, with the runtime update-side gates
+    remaining authoritative for traced values.
+    """
+    agent = _make_agent()
+    state = agent.init(2, jr.key(0))
+    observation = jnp.array([1.0, 0.0], dtype=jnp.float32)
+
+    started, action, probs = jax.jit(agent.start)(state, observation)
+
+    chex.assert_trees_all_close(started.last_observation, observation)
+    assert bool(jnp.all(jnp.isfinite(probs)))
+    assert int(started.last_action) == int(action)
